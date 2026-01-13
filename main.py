@@ -18,8 +18,10 @@ def baixar_audio(url: str):
         # Configuração para M4A (sem precisar do FFmpeg)
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio',
-            'outtmpl': 'downloaded_audio.%(ext)s', # Nome fixo temporário para facilitar o envio
-            'noplaylist': True
+            'outtmpl': 'downloaded_audio.%(ext)s',
+            'noplaylist': True,
+            'cookiefile': 'cookies.txt',  # <--- ESSA LINHA É OBRIGATÓRIA
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 
         }
 
         # Baixa o áudio
