@@ -17,23 +17,33 @@ def baixar_audio(url: str):
             os.remove("downloaded_audio.mp3")
 
         ydl_opts = {
-            # Baixa QUALQUER melhor áudio disponível (não importa se é webm ou m4a)
-            'format': 'bestaudio/best',
+            # 1. FORÇA APENAS ÁUDIO LEVE (M4A)
+            # Isso evita baixar 9GB. Vai baixar cerca de 300MB para 5 horas.
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',
             
-            # Usa o FFmpeg (instalado no Docker) para converter tudo para MP3
+            # 2. CONFIGURAÇÕES DE REDE E RETRIES (Para não falhar em vídeo longo)
+            'socket_timeout': 15,         # Tempo limite de conexão
+            'retries': 10,                # Tenta 10 vezes se o vídeo falhar
+            'fragment_retries': 10,       # Tenta 10 vezes se um pedacinho falhar
+            'skip_unavailable_fragments': False, # Não pula pedaços (evita áudio corrompido)
+            
+            # 3. OTIMIZAÇÃO DE DISCO (Evita erro de rename/no such file)
+            'keepvideo': False,
+            'buffer_size': 1024,          # Buffer menor para economizar RAM
+            'http_chunk_size': 10485760,  # Baixa em blocos de 10MB
+            
+            # 4. PÓS-PROCESSAMENTO (Garante MP3 no final)
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '192',
+                'preferredquality': '128', # 128kbps é suficiente para voz/youtube e muito mais leve/rápido
             }],
             
-            # Nome fixo para facilitar o envio (o yt-dlp vai adicionar .mp3 automaticamente)
+            # Configurações padrão
             'outtmpl': 'downloaded_audio', 
-            
-            # Configurações de autenticação e "disfarce"
+            'noplaylist': True,
             'cookiefile': 'cookies.txt',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'noplaylist': True
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
