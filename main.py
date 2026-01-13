@@ -16,27 +16,28 @@ def baixar_audio(url: str):
         if os.path.exists("downloaded_audio.mp3"):
             os.remove("downloaded_audio.mp3")
 
+        # Configuração otimizada para vídeos longos (Podcast/Lives)
         ydl_opts = {
-            # 1. FORÇA APENAS ÁUDIO LEVE (M4A)
-            # Isso evita baixar 9GB. Vai baixar cerca de 300MB para 5 horas.
-            'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',
+            # 1. FORÇA APENAS ÁUDIO LEVE (AAC/M4A)
+            # Evita baixar arquivos de vídeo de 9GB. Baixa direto o áudio (~60MB por hora).
+            'format': 'bestaudio[ext=m4a]/bestaudio',
             
-            # 2. CONFIGURAÇÕES DE REDE E RETRIES (Para não falhar em vídeo longo)
-            'socket_timeout': 15,         # Tempo limite de conexão
-            'retries': 10,                # Tenta 10 vezes se o vídeo falhar
-            'fragment_retries': 10,       # Tenta 10 vezes se um pedacinho falhar
-            'skip_unavailable_fragments': False, # Não pula pedaços (evita áudio corrompido)
+            # 2. RESILIÊNCIA DE REDE (Para não falhar em 5 horas de download)
+            'socket_timeout': 30,         # Aumenta tolerância de conexão
+            'retries': 20,                # Tenta 20 vezes se falhar o vídeo
+            'fragment_retries': 20,       # Tenta 20 vezes se falhar um pedacinho
+            'skip_unavailable_fragments': False, # Não pula pedaços (evita áudio picotado)
             
-            # 3. OTIMIZAÇÃO DE DISCO (Evita erro de rename/no such file)
+            # 3. OTIMIZAÇÃO DE DISCO E MEMÓRIA
             'keepvideo': False,
-            'buffer_size': 1024,          # Buffer menor para economizar RAM
+            'buffer_size': 1024 * 1024,   # Buffer de 1MB para economizar RAM
             'http_chunk_size': 10485760,  # Baixa em blocos de 10MB
             
-            # 4. PÓS-PROCESSAMENTO (Garante MP3 no final)
+            # 4. CONVERSÃO FINAL (Garante MP3 compatível)
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '128', # 128kbps é suficiente para voz/youtube e muito mais leve/rápido
+                'preferredquality': '128', # 128kbps é o padrão do YouTube, mais rápido de processar
             }],
             
             # Configurações padrão
