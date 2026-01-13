@@ -1,0 +1,17 @@
+# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file! Do not edit.
+
+.github.com	TRUE	/	TRUE	0	cpu_bucket	xlg
+.github.com	TRUE	/	TRUE	0	preferred_color_mode	dark
+.github.com	TRUE	/	TRUE	0	tz	America%2FSao_Paulo
+github.com	FALSE	/	TRUE	1799854906	_device_id	455f59a39d511ba58dffe7646d817078
+github.com	FALSE	/	TRUE	1776094924	saved_user_sessions	122551890%3AyKQnbYJkvmQiPqvzBR-JpULboPTYO0p1kHk6zu5b0GfA9UVF
+github.com	FALSE	/	TRUE	1769528524	user_session	yKQnbYJkvmQiPqvzBR-JpULboPTYO0p1kHk6zu5b0GfA9UVF
+github.com	FALSE	/	TRUE	1769528524	__Host-user_session_same_site	yKQnbYJkvmQiPqvzBR-JpULboPTYO0p1kHk6zu5b0GfA9UVF
+github.com	FALSE	/	TRUE	0	tz	America%2FSao_Paulo
+.github.com	TRUE	/	TRUE	0	color_mode	%7B%22color_mode%22%3A%22auto%22%2C%22light_theme%22%3A%7B%22name%22%3A%22light%22%2C%22color_mode%22%3A%22light%22%7D%2C%22dark_theme%22%3A%7B%22name%22%3A%22dark%22%2C%22color_mode%22%3A%22dark%22%7D%7D
+.github.com	TRUE	/	TRUE	1799854925	dotcom_user	userJesus
+.github.com	TRUE	/	TRUE	1799856751	_octo	GH1.1.1297582328.1768320750
+.github.com	TRUE	/	TRUE	1799856751	logged_in	yes
+github.com	FALSE	/	TRUE	0	_gh_sess	11xAU7IniXnvEZldY2gH%2FkppnwrukEEFj6u%2FXFocxVWIab%2FW%2F0SLbQMB9V%2BolAFGd3ENZQSUgqsBSmZeyuo4%2BKKTfV%2F6TQpKQm6atu0nux1q88pObtX7xAw2VqaGXRPFXlKLTVTt274GlrbhqJ42ilfku3%2FYcX1cr%2BIsmcwvwvMxugdLd343BSnuQckvJ4GRuBXdUj6us9Yi69LJUjr3prnYo%2F%2Fi8iNUypFrL8Ynfl0ww0Ugg%2FE5fA9lf2ki7fmsRF3RmDuo5R3F0zGuOkprpsu75ZIqVVAYSd5WEc5FOA8mUX83%2F8rqpPwRxosESVvO4VsyFde0ipc3WsD9kI6Y8qhmswewCJXSqcUFXrk510A5nn%2F3lBDt5y8OgCrZNX%2FNdRO4owPkMYN%2Bo3PtDW%2BDVFSDgr4lr%2FhRg6dNmUtZhV5CmOhImp03Kni6hojb06KoJH3zY2Qa%2BPJVF0VoBuRjjkMMC3Ty0HGV--mKFJvNaqDexWjzCP--H6vH5B1eVZ6X0dapkEEYSg%3D%3D
