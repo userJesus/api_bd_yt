@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import yt_dlp
 import os
@@ -9,8 +9,7 @@ import time
 
 app = FastAPI(title="API YouTube Audio Splitter")
 
-# Configuração: Tamanho máximo de cada pedaço em segundos (ex: 45 minutos = 2700s)
-# Isso garante que o servidor aguente processar sem estourar memória/tempo.
+# Configuração: Tamanho de cada pedaço (45 minutos)
 CHUNK_SIZE_SECONDS = 2700 
 
 class PartInfo(BaseModel):
@@ -35,7 +34,6 @@ def cleanup_old_files():
     try:
         files = glob.glob("part_*.mp3")
         for f in files:
-            # Se o arquivo tem mais de 20 minutos, deleta
             if os.path.getmtime(f) < time.time() - 1200: 
                 os.remove(f)
     except:
@@ -48,27 +46,28 @@ def home():
     return {"message": "API Splitter Online. Use /analyze para começar."}
 
 @app.get("/analyze", response_model=VideoAnalysis)
-def analyze_video(url: str, server_url: str = Query(..., description="A URL base da sua API (ex: https://api.com)")):
+def analyze_video(url: str, server_url: str = Query(..., description="A URL base da sua API")):
     """
-    Passo 1: Analisa o vídeo e retorna o plano de corte (Quantas partes baixar).
+    Passo 1: Analisa o vídeo e retorna o plano de corte.
     """
     try:
         ydl_opts = {
             'cookiefile': 'cookies.txt',
             'user_agent': 'Mozilla/5.0',
             'noplaylist': True,
+            # CORREÇÃO SSL: Ignora verificação de certificado
+            'nocheckcertificate': True, 
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # extract_info com download=False é super rápido, só pega metadados
             info = ydl.extract_info(url, download=False)
             duration = info.get('duration', 0)
             title = info.get('title', 'video_desconhecido')
 
         if not duration:
-            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração do vídeo.")
+            # Fallback se não conseguir pegar a duração
+            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração. O vídeo pode ser uma Live ativa.")
 
-        # Lógica de Divisão
         parts = []
         num_parts = math.ceil(duration / CHUNK_SIZE_SECONDS)
         
@@ -76,7 +75,6 @@ def analyze_video(url: str, server_url: str = Query(..., description="A URL base
             start = i * CHUNK_SIZE_SECONDS
             end = min((i + 1) * CHUNK_SIZE_SECONDS, duration)
             
-            # Monta a URL que o usuário deve chamar para baixar esse pedaço
             dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start={start}&end={end}&part={i+1}"
             
             parts.append({
@@ -94,7 +92,7 @@ def analyze_video(url: str, server_url: str = Query(..., description="A URL base
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Erro na análise: {str(e)}")
 
 
 @app.get("/download-part")
@@ -105,26 +103,23 @@ def download_part(
     part: int = 1
 ):
     """
-    Passo 2: Baixa e converte apenas o intervalo de tempo solicitado.
+    Passo 2: Baixa e converte apenas o intervalo solicitado.
     """
-    cleanup_old_files() # Limpeza preventiva
+    cleanup_old_files()
     
     filename_base = f"part_{part}_{int(time.time())}"
     
-    # Função auxiliar para filtrar o intervalo
     def download_range_func(info, ydl):
-        return [{
-            'start_time': start,
-            'end_time': end
-        }]
+        return [{'start_time': start, 'end_time': end}]
 
     try:
         ydl_opts = {
             'format': 'bestaudio/best',
-            
-            # --- O PULO DO GATO: DOWNLOAD POR INTERVALO ---
             'download_ranges': download_range_func,
-            'force_keyframes_at_cuts': False, # False é mais rápido, True é mais preciso no corte
+            'force_keyframes_at_cuts': False,
+            
+            # --- CORREÇÃO DO ERRO SSL AQUI ---
+            'nocheckcertificate': True,
             
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -133,9 +128,11 @@ def download_part(
             }],
             'outtmpl': filename_base,
             'cookiefile': 'cookies.txt',
-            # Timeouts e Retries para garantir estabilidade
+            
+            # Resiliência
             'socket_timeout': 30,
             'retries': 10,
+            'ignoreerrors': True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -145,9 +142,8 @@ def download_part(
         final_filename = f"{filename_base}.mp3"
         
         if not os.path.exists(final_filename):
-            raise HTTPException(status_code=500, detail="Erro na conversão do arquivo.")
+            raise HTTPException(status_code=500, detail="Erro: Arquivo MP3 não foi gerado. Verifique os logs.")
 
-        # Nome bonito para o download do usuário
         user_filename = f"{clean_filename(real_title)}_Parte{part}.mp3"
 
         return FileResponse(
@@ -157,5 +153,7 @@ def download_part(
         )
 
     except Exception as e:
-        print(f"Erro: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Tenta limpar lixo se der erro
+        if os.path.exists(f"{filename_base}.mp3"):
+            os.remove(f"{filename_base}.mp3")
+        raise HTTPException(status_code=500, detail=f"Erro no download: {str(e)}")
