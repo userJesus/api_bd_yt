@@ -7,7 +7,7 @@ import glob
 import math
 import time
 
-app = FastAPI(title="API YouTube Audio Splitter")
+app = FastAPI(title="API YouTube Audio Splitter (Precision Fix)")
 
 # Configuração: Tamanho de cada pedaço (45 minutos)
 CHUNK_SIZE_SECONDS = 2700 
@@ -27,10 +27,11 @@ class VideoAnalysis(BaseModel):
 # --- Funções Auxiliares ---
 
 def clean_filename(title: str) -> str:
+    # Limpa nome do arquivo para evitar erro no sistema de arquivos
     return "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
 
 def cleanup_old_files():
-    """Remove arquivos antigos para liberar espaço"""
+    """Remove arquivos antigos (mais de 20min) para liberar espaço"""
     try:
         files = glob.glob("part_*.mp3")
         for f in files:
@@ -43,7 +44,7 @@ def cleanup_old_files():
 
 @app.get("/")
 def home():
-    return {"message": "API Splitter Online. Use /analyze para começar."}
+    return {"message": "API Splitter Precision Online. Use /analyze para começar."}
 
 @app.get("/analyze", response_model=VideoAnalysis)
 def analyze_video(url: str, server_url: str = Query(..., description="A URL base da sua API")):
@@ -55,7 +56,6 @@ def analyze_video(url: str, server_url: str = Query(..., description="A URL base
             'cookiefile': 'cookies.txt',
             'user_agent': 'Mozilla/5.0',
             'noplaylist': True,
-            # CORREÇÃO SSL: Ignora verificação de certificado
             'nocheckcertificate': True, 
         }
 
@@ -65,8 +65,7 @@ def analyze_video(url: str, server_url: str = Query(..., description="A URL base
             title = info.get('title', 'video_desconhecido')
 
         if not duration:
-            # Fallback se não conseguir pegar a duração
-            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração. O vídeo pode ser uma Live ativa.")
+            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração. Verifique se é uma Live ativa.")
 
         parts = []
         num_parts = math.ceil(duration / CHUNK_SIZE_SECONDS)
@@ -103,7 +102,7 @@ def download_part(
     part: int = 1
 ):
     """
-    Passo 2: Baixa e converte apenas o intervalo solicitado.
+    Passo 2: Baixa com precisão de frames usando FFmpeg.
     """
     cleanup_old_files()
     
@@ -116,16 +115,27 @@ def download_part(
         ydl_opts = {
             'format': 'bestaudio/best',
             'download_ranges': download_range_func,
-            'force_keyframes_at_cuts': False,
             
-            # --- CORREÇÃO DO ERRO SSL AQUI ---
+            # --- CORREÇÃO DE PRECISÃO DE ÁUDIO ---
+            # 1. Força re-encode nas pontas do corte para evitar silêncio/glitch
+            'force_keyframes_at_cuts': True,
+            
+            # 2. Usa o FFmpeg como downloader (mais preciso para slices que o nativo)
+            'external_downloader': 'ffmpeg',
+            'external_downloader_args': {
+                'ffmpeg_i': ['-ss', str(start), '-to', str(end)]
+            },
+            
+            # --- CORREÇÃO SSL ---
             'nocheckcertificate': True,
             
+            # Conversão final para MP3
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '128',
             }],
+            
             'outtmpl': filename_base,
             'cookiefile': 'cookies.txt',
             
@@ -135,14 +145,22 @@ def download_part(
             'ignoreerrors': True,
         }
 
+        # Executa o download
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             real_title = info.get('title', 'audio_part')
 
         final_filename = f"{filename_base}.mp3"
         
+        # Verificação extra de arquivo
         if not os.path.exists(final_filename):
-            raise HTTPException(status_code=500, detail="Erro: Arquivo MP3 não foi gerado. Verifique os logs.")
+            # As vezes o FFmpeg salva com extensão diferente antes de converter
+            possiveis = glob.glob(f"{filename_base}.*")
+            if possiveis:
+                # Se achou algo (ex: .m4a), tenta retornar ele ou renomear
+                final_filename = possiveis[0]
+            else:
+                raise HTTPException(status_code=500, detail="Erro: Arquivo de áudio não gerado.")
 
         user_filename = f"{clean_filename(real_title)}_Parte{part}.mp3"
 
@@ -153,7 +171,6 @@ def download_part(
         )
 
     except Exception as e:
-        # Tenta limpar lixo se der erro
         if os.path.exists(f"{filename_base}.mp3"):
             os.remove(f"{filename_base}.mp3")
         raise HTTPException(status_code=500, detail=f"Erro no download: {str(e)}")
