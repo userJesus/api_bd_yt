@@ -8,9 +8,9 @@ import math
 import time
 import gc
 
-app = FastAPI(title="API Audio Splitter (Low CPU - M4A)")
+app = FastAPI(title="API Splitter (Robust + Low CPU)")
 
-# Constantes
+# Configurações
 LIMIT_SINGLE_PART = 3599
 CHUNK_SIZE_LONG = 1800
 
@@ -26,35 +26,35 @@ class VideoAnalysis(BaseModel):
     total_parts: int
     parts: list[PartInfo]
 
-# --- Funções Auxiliares ---
-
+# --- Utils ---
 def clean_filename(title: str) -> str:
     return "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
 
 def cleanup_old_files():
     try:
-        files = glob.glob("part_*.m4a") # Alterado para remover .m4a
-        for f in files:
-            if os.path.getmtime(f) < time.time() - 1200: 
-                os.remove(f)
+        # Remove qualquer lixo de download antigo
+        for ext in ["mp3", "m4a", "webm", "part"]:
+            for f in glob.glob(f"*.{ext}"):
+                if os.path.getmtime(f) < time.time() - 1200: 
+                    os.remove(f)
         gc.collect()
     except:
         pass
 
 # --- Endpoints ---
-
 @app.get("/")
 def home():
-    return {"message": "API Low CPU Online. Format: M4A (Native)"}
+    return {"message": "API Robust Online"}
 
 @app.get("/analyze", response_model=VideoAnalysis)
-def analyze_video(url: str, server_url: str = Query(..., description="URL base da sua API")):
+def analyze_video(url: str, server_url: str = Query(..., description="URL base")):
     try:
         ydl_opts = {
             'cookiefile': 'cookies.txt',
             'user_agent': 'Mozilla/5.0',
             'noplaylist': True,
-            'nocheckcertificate': True, 
+            'nocheckcertificate': True,
+            'socket_timeout': 30,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -63,14 +63,21 @@ def analyze_video(url: str, server_url: str = Query(..., description="URL base d
             title = info.get('title', 'video_desconhecido')
 
         if not duration:
-            raise HTTPException(status_code=400, detail="Não foi possível pegar a duração.")
-
+            # Fallback para lives ou erros de leitura
+            # Assume 1 parte se não conseguir ler duração
+            duration = 1
+        
         parts = []
-
+        
+        # Se for muito curto ou erro de leitura, faz download único
         if duration <= LIMIT_SINGLE_PART:
+            parts.append({
+                "part_number": 1,
+                "start_time": 0,
+                "end_time": duration if duration > 1 else None, # None baixa tudo
+                "download_url": f"{server_url.rstrip('/')}/download-part?url={url}&start=0&end={duration}&part=1"
+            })
             num_parts = 1
-            dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start=0&end={duration}&part=1"
-            parts.append({"part_number": 1, "start_time": 0, "end_time": duration, "download_url": dl_link})
         else:
             chunk_size = CHUNK_SIZE_LONG
             num_parts = math.ceil(duration / chunk_size)
@@ -88,49 +95,45 @@ def analyze_video(url: str, server_url: str = Query(..., description="URL base d
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro na análise: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=f"Erro Analyze: {str(e)}")
 
 @app.get("/download-part")
-def download_part(
-    url: str, 
-    start: int, 
-    end: int, 
-    part: int = 1
-):
-    """
-    Passo 2: Download Otimizado (M4A Nativo + Limite de CPU).
-    """
+def download_part(url: str, start: int, end: int, part: int = 1):
     cleanup_old_files()
     filename_base = f"part_{part}_{int(time.time())}"
     
+    # Define range apenas se end > 1 (evita erro em vídeos sem duração)
     def download_range_func(info, ydl):
-        return [{'start_time': start, 'end_time': end}]
+        if end and end > 1:
+            return [{'start_time': start, 'end_time': end}]
+        return None
 
     try:
         ydl_opts = {
-            # 1. BAIXA DIRETO EM M4A (Formato nativo leve)
-            # Isso evita a conversão pesada para MP3
-            'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio',
+            # CORREÇÃO 1: Aceita TUDO (bestaudio/best). 
+            # Se não tiver M4A, baixa WebM e converte. Resolve o erro "Format not available".
+            'format': 'bestaudio/best',
             
             'download_ranges': download_range_func,
-            'force_keyframes_at_cuts': True, # Mantém a precisão do áudio
+            'force_keyframes_at_cuts': True,
             
-            # 2. LIMITA O DOWNLOAD
+            # CORREÇÃO 2: Limites de CPU e Buffer
             'concurrent_fragment_downloads': 1,
             'buffersize': 1024,
             
-            # 3. LIMITA O USO DE CPU NO FFMPEG
+            # CORREÇÃO 3: Conversão MP3 Leve (1 thread)
+            # Garante que funciona em qualquer player, mas não trava o servidor
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128',
+            }],
             'postprocessor_args': [
-                '-threads', '1',       # Usa APENAS 1 núcleo (evita o pico de 400%)
-                '-preset', 'ultrafast', # Prioriza velocidade
-                '-vn'                  # Garante que remove vídeo se vier junto
+                '-threads', '1',       # Usa SÓ 1 núcleo
+                '-preset', 'ultrafast' # Velocidade máxima
             ],
-            
-            # NÃO USAMOS 'FFmpegExtractAudio' com codec mp3 aqui.
-            # Deixamos nativo ou convertemos levemente para m4a/aac se necessário
-            
-            'nocheckcertificate': True,
+
+            'nocheckcertificate': True, # Resolve erro SSL
             'outtmpl': filename_base,
             'cookiefile': 'cookies.txt',
             'socket_timeout': 30,
@@ -142,29 +145,24 @@ def download_part(
             info = ydl.extract_info(url, download=True)
             real_title = info.get('title', 'audio_part')
 
-        # O arquivo provavelmente será .m4a ou .webm (opus)
-        # Vamos procurar qualquer extensão gerada
-        possiveis = glob.glob(f"{filename_base}.*")
-        final_filename = possiveis[0] if possiveis else None
-            
-        if not final_filename:
-             raise HTTPException(status_code=500, detail="Erro: Arquivo não gerado.")
+        final_filename = f"{filename_base}.mp3"
+        
+        # Verificação final
+        if not os.path.exists(final_filename):
+            # Procura por qualquer arquivo gerado se a conversão falhou
+            possiveis = glob.glob(f"{filename_base}.*")
+            if possiveis:
+                final_filename = possiveis[0]
+            else:
+                raise HTTPException(status_code=500, detail="Erro: Download falhou (arquivo não criado). Tente atualizar o yt-dlp.")
 
-        # Extensão correta para o usuário
+        # Nome amigável
         ext = final_filename.split('.')[-1]
         user_filename = f"{clean_filename(real_title)}_Parte{part}.{ext}"
-        
-        # Define o media_type correto
-        mime_type = 'audio/mp4' if ext == 'm4a' else 'audio/mpeg'
+        mime = 'audio/mpeg' if ext == 'mp3' else 'audio/mp4'
 
-        return FileResponse(
-            path=final_filename, 
-            filename=user_filename, 
-            media_type=mime_type
-        )
+        return FileResponse(path=final_filename, filename=user_filename, media_type=mime)
 
     except Exception as e:
-        # Tenta limpar lixo
-        for f in glob.glob(f"{filename_base}.*"):
-            os.remove(f)
-        raise HTTPException(status_code=500, detail=f"Erro no download: {str(e)}")
+        if os.path.exists(f"{filename_base}.mp3"): os.remove(f"{filename_base}.mp3")
+        raise HTTPException(status_code=500, detail=f"Erro Download: {str(e)}")
