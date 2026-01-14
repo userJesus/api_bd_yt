@@ -7,10 +7,11 @@ import glob
 import math
 import time
 
-app = FastAPI(title="API YouTube Audio Splitter (Precision Fix)")
+app = FastAPI(title="API YouTube Audio Splitter (Smart Logic)")
 
-# Configuração: Tamanho de cada pedaço (45 minutos)
-CHUNK_SIZE_SECONDS = 2700 
+# Constantes de Tempo
+LIMIT_SINGLE_PART = 3599  # 59 minutos e 59 segundos
+CHUNK_SIZE_LONG = 1800    # 30 minutos (para vídeos longos)
 
 class PartInfo(BaseModel):
     part_number: int
@@ -27,7 +28,7 @@ class VideoAnalysis(BaseModel):
 # --- Funções Auxiliares ---
 
 def clean_filename(title: str) -> str:
-    # Limpa nome do arquivo para evitar erro no sistema de arquivos
+    # Remove caracteres perigosos do nome do arquivo
     return "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
 
 def cleanup_old_files():
@@ -44,12 +45,13 @@ def cleanup_old_files():
 
 @app.get("/")
 def home():
-    return {"message": "API Splitter Precision Online. Use /analyze para começar."}
+    return {"message": "API Smart Splitter Online. Use /analyze"}
 
 @app.get("/analyze", response_model=VideoAnalysis)
-def analyze_video(url: str, server_url: str = Query(..., description="A URL base da sua API")):
+def analyze_video(url: str, server_url: str = Query(..., description="URL base da sua API")):
     """
-    Passo 1: Analisa o vídeo e retorna o plano de corte.
+    Passo 1: Analisa e decide se divide ou não.
+    Regra: <= 59:59 vai inteiro. > 59:59 divide em blocos de 30min.
     """
     try:
         ydl_opts = {
@@ -65,23 +67,40 @@ def analyze_video(url: str, server_url: str = Query(..., description="A URL base
             title = info.get('title', 'video_desconhecido')
 
         if not duration:
-            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração. Verifique se é uma Live ativa.")
+            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração.")
 
         parts = []
-        num_parts = math.ceil(duration / CHUNK_SIZE_SECONDS)
-        
-        for i in range(num_parts):
-            start = i * CHUNK_SIZE_SECONDS
-            end = min((i + 1) * CHUNK_SIZE_SECONDS, duration)
-            
-            dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start={start}&end={end}&part={i+1}"
+
+        # --- LÓGICA DE DECISÃO ---
+        if duration <= LIMIT_SINGLE_PART:
+            # CASO 1: Vídeo Curto (Até 59:59) -> 1 Parte Única
+            num_parts = 1
+            dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start=0&end={duration}&part=1"
             
             parts.append({
-                "part_number": i + 1,
-                "start_time": start,
-                "end_time": end,
+                "part_number": 1,
+                "start_time": 0,
+                "end_time": duration,
                 "download_url": dl_link
             })
+            
+        else:
+            # CASO 2: Vídeo Longo (> 59:59) -> Fatiar em 30 min
+            chunk_size = CHUNK_SIZE_LONG
+            num_parts = math.ceil(duration / chunk_size)
+            
+            for i in range(num_parts):
+                start = i * chunk_size
+                end = min((i + 1) * chunk_size, duration)
+                
+                dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start={start}&end={end}&part={i+1}"
+                
+                parts.append({
+                    "part_number": i + 1,
+                    "start_time": start,
+                    "end_time": end,
+                    "download_url": dl_link
+                })
 
         return {
             "title": title,
@@ -102,7 +121,7 @@ def download_part(
     part: int = 1
 ):
     """
-    Passo 2: Baixa com precisão de frames usando FFmpeg.
+    Passo 2: Baixa o trecho solicitado com precisão máxima.
     """
     cleanup_old_files()
     
@@ -116,20 +135,19 @@ def download_part(
             'format': 'bestaudio/best',
             'download_ranges': download_range_func,
             
-            # --- CORREÇÃO DE PRECISÃO DE ÁUDIO ---
-            # 1. Força re-encode nas pontas do corte para evitar silêncio/glitch
+            # Precisão de Áudio (Evita silêncio no início)
             'force_keyframes_at_cuts': True,
             
-            # 2. Usa o FFmpeg como downloader (mais preciso para slices que o nativo)
+            # Engine de Download (FFmpeg é melhor para cortes)
             'external_downloader': 'ffmpeg',
             'external_downloader_args': {
                 'ffmpeg_i': ['-ss', str(start), '-to', str(end)]
             },
             
-            # --- CORREÇÃO SSL ---
+            # Segurança SSL
             'nocheckcertificate': True,
             
-            # Conversão final para MP3
+            # Conversão para MP3 leve
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -138,29 +156,24 @@ def download_part(
             
             'outtmpl': filename_base,
             'cookiefile': 'cookies.txt',
-            
-            # Resiliência
             'socket_timeout': 30,
             'retries': 10,
             'ignoreerrors': True,
         }
 
-        # Executa o download
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             real_title = info.get('title', 'audio_part')
 
         final_filename = f"{filename_base}.mp3"
         
-        # Verificação extra de arquivo
+        # Fallback para caso a extensão mude
         if not os.path.exists(final_filename):
-            # As vezes o FFmpeg salva com extensão diferente antes de converter
             possiveis = glob.glob(f"{filename_base}.*")
             if possiveis:
-                # Se achou algo (ex: .m4a), tenta retornar ele ou renomear
                 final_filename = possiveis[0]
             else:
-                raise HTTPException(status_code=500, detail="Erro: Arquivo de áudio não gerado.")
+                raise HTTPException(status_code=500, detail="Erro: Arquivo não gerado.")
 
         user_filename = f"{clean_filename(real_title)}_Parte{part}.mp3"
 
@@ -171,6 +184,7 @@ def download_part(
         )
 
     except Exception as e:
+        # Limpeza de erro
         if os.path.exists(f"{filename_base}.mp3"):
             os.remove(f"{filename_base}.mp3")
         raise HTTPException(status_code=500, detail=f"Erro no download: {str(e)}")
