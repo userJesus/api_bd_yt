@@ -1,26 +1,24 @@
-# Usa uma imagem leve do Python
-FROM python:3.10-slim
+# Usa uma imagem Python leve baseada em Linux (Debian)
+FROM python:3.9-slim
 
-# Instala dependências do sistema (git e ffmpeg se decidir usar no futuro)
-RUN apt-get update && apt-get install -y \
-    git \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# 1. Instala o FFmpeg no sistema operacional
+# Isso é OBRIGATÓRIO para o yt-dlp conseguir converter áudio para MP3
+RUN apt-get update && \
+    apt-get install -y ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
 
-# Define a pasta de trabalho
+# Define o diretório de trabalho dentro do container
 WORKDIR /app
 
-# Copia os arquivos de requisitos primeiro (para aproveitar o cache)
+# 2. Copia o requirements.txt e instala as dependências Python
 COPY requirements.txt .
-
-# Instala as dependências do Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia o restante do código
+# 3. Copia todo o resto do código (main.py, cookies.txt, etc.)
 COPY . .
 
-# Expõe a porta que o FastAPI/Uvicorn vai usar
+# Expõe a porta padrão do FastAPI
 EXPOSE 8000
 
-# Comando para rodar a API
+# Comando para iniciar o servidor
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
