@@ -6,13 +6,13 @@ import os
 import glob
 import math
 import time
-import gc # Garbage Collector para limpar RAM
+import gc
 
-app = FastAPI(title="API YouTube Audio Splitter (Optimized)")
+app = FastAPI(title="API Audio Splitter (Low CPU - M4A)")
 
 # Constantes
-LIMIT_SINGLE_PART = 3599  # Até 59:59 em 1 link
-CHUNK_SIZE_LONG = 1800    # 30 minutos por parte
+LIMIT_SINGLE_PART = 3599
+CHUNK_SIZE_LONG = 1800
 
 class PartInfo(BaseModel):
     part_number: int
@@ -32,13 +32,12 @@ def clean_filename(title: str) -> str:
     return "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
 
 def cleanup_old_files():
-    """Remove arquivos antigos e força limpeza de RAM"""
     try:
-        files = glob.glob("part_*.mp3")
+        files = glob.glob("part_*.m4a") # Alterado para remover .m4a
         for f in files:
             if os.path.getmtime(f) < time.time() - 1200: 
                 os.remove(f)
-        gc.collect() # Força limpeza de memória RAM
+        gc.collect()
     except:
         pass
 
@@ -46,13 +45,10 @@ def cleanup_old_files():
 
 @app.get("/")
 def home():
-    return {"message": "API Smart Splitter Optimized. Use /analyze"}
+    return {"message": "API Low CPU Online. Format: M4A (Native)"}
 
 @app.get("/analyze", response_model=VideoAnalysis)
 def analyze_video(url: str, server_url: str = Query(..., description="URL base da sua API")):
-    """
-    Passo 1: Analisa levemente (sem baixar nada pesado).
-    """
     try:
         ydl_opts = {
             'cookiefile': 'cookies.txt',
@@ -71,7 +67,6 @@ def analyze_video(url: str, server_url: str = Query(..., description="URL base d
 
         parts = []
 
-        # Lógica de decisão (Inteiro vs Fatiado)
         if duration <= LIMIT_SINGLE_PART:
             num_parts = 1
             dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start=0&end={duration}&part=1"
@@ -104,7 +99,7 @@ def download_part(
     part: int = 1
 ):
     """
-    Passo 2: Baixa OTIMIZADO (Menos CPU/RAM).
+    Passo 2: Download Otimizado (M4A Nativo + Limite de CPU).
     """
     cleanup_old_files()
     filename_base = f"part_{part}_{int(time.time())}"
@@ -114,31 +109,26 @@ def download_part(
 
     try:
         ydl_opts = {
-            # OTIMIZAÇÃO 1: Baixa o melhor áudio disponível (geralmente m4a/opus)
-            # Evita baixar vídeo para extrair áudio.
-            'format': 'bestaudio/best',
+            # 1. BAIXA DIRETO EM M4A (Formato nativo leve)
+            # Isso evita a conversão pesada para MP3
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio',
             
-            # Recorte preciso
             'download_ranges': download_range_func,
-            'force_keyframes_at_cuts': True, # Mantém a precisão, mas deixa o yt-dlp gerenciar
+            'force_keyframes_at_cuts': True, # Mantém a precisão do áudio
             
-            # OTIMIZAÇÃO 2: Configurações de Rede e Buffer (Economia de RAM)
-            'concurrent_fragment_downloads': 1, # Não baixar múltiplos pedaços ao mesmo tempo
-            'buffersize': 1024, # Buffer pequeno
-            'http_chunk_size': 1048576, # Baixa em blocos de 1MB (suave para a rede)
+            # 2. LIMITA O DOWNLOAD
+            'concurrent_fragment_downloads': 1,
+            'buffersize': 1024,
             
-            # OTIMIZAÇÃO 3: Post-Processamento Leve
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '128', # 128k é o equilíbrio perfeito. Acima disso gasta CPU à toa.
-            }],
-            
-            # Flags para o FFmpeg (Prioriza velocidade na conversão)
+            # 3. LIMITA O USO DE CPU NO FFMPEG
             'postprocessor_args': [
-                '-threads', '1',  # Usa apenas 1 núcleo do processador por conversão (não trava o servidor)
-                '-preset', 'ultrafast' # Tenta codificar o mais rápido possível
+                '-threads', '1',       # Usa APENAS 1 núcleo (evita o pico de 400%)
+                '-preset', 'ultrafast', # Prioriza velocidade
+                '-vn'                  # Garante que remove vídeo se vier junto
             ],
+            
+            # NÃO USAMOS 'FFmpegExtractAudio' com codec mp3 aqui.
+            # Deixamos nativo ou convertemos levemente para m4a/aac se necessário
             
             'nocheckcertificate': True,
             'outtmpl': filename_base,
@@ -152,24 +142,29 @@ def download_part(
             info = ydl.extract_info(url, download=True)
             real_title = info.get('title', 'audio_part')
 
-        final_filename = f"{filename_base}.mp3"
-        
-        if not os.path.exists(final_filename):
-            possiveis = glob.glob(f"{filename_base}.*")
-            final_filename = possiveis[0] if possiveis else None
+        # O arquivo provavelmente será .m4a ou .webm (opus)
+        # Vamos procurar qualquer extensão gerada
+        possiveis = glob.glob(f"{filename_base}.*")
+        final_filename = possiveis[0] if possiveis else None
             
         if not final_filename:
              raise HTTPException(status_code=500, detail="Erro: Arquivo não gerado.")
 
-        user_filename = f"{clean_filename(real_title)}_Parte{part}.mp3"
+        # Extensão correta para o usuário
+        ext = final_filename.split('.')[-1]
+        user_filename = f"{clean_filename(real_title)}_Parte{part}.{ext}"
+        
+        # Define o media_type correto
+        mime_type = 'audio/mp4' if ext == 'm4a' else 'audio/mpeg'
 
         return FileResponse(
             path=final_filename, 
             filename=user_filename, 
-            media_type='audio/mpeg'
+            media_type=mime_type
         )
 
     except Exception as e:
-        if os.path.exists(f"{filename_base}.mp3"):
-            os.remove(f"{filename_base}.mp3")
+        # Tenta limpar lixo
+        for f in glob.glob(f"{filename_base}.*"):
+            os.remove(f)
         raise HTTPException(status_code=500, detail=f"Erro no download: {str(e)}")
