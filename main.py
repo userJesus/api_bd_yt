@@ -1,83 +1,161 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 import yt_dlp
 import os
 import glob
+import math
+import time
 
-app = FastAPI()
+app = FastAPI(title="API YouTube Audio Splitter")
+
+# Configuração: Tamanho máximo de cada pedaço em segundos (ex: 45 minutos = 2700s)
+# Isso garante que o servidor aguente processar sem estourar memória/tempo.
+CHUNK_SIZE_SECONDS = 2700 
+
+class PartInfo(BaseModel):
+    part_number: int
+    start_time: int
+    end_time: int
+    download_url: str
+
+class VideoAnalysis(BaseModel):
+    title: str
+    duration_total: int
+    total_parts: int
+    parts: list[PartInfo]
+
+# --- Funções Auxiliares ---
+
+def clean_filename(title: str) -> str:
+    return "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
+
+def cleanup_old_files():
+    """Remove arquivos antigos para liberar espaço"""
+    try:
+        files = glob.glob("part_*.mp3")
+        for f in files:
+            # Se o arquivo tem mais de 20 minutos, deleta
+            if os.path.getmtime(f) < time.time() - 1200: 
+                os.remove(f)
+    except:
+        pass
+
+# --- Endpoints ---
 
 @app.get("/")
 def home():
-    return {"message": "API de Download de Áudio (MP3) está online!"}
+    return {"message": "API Splitter Online. Use /analyze para começar."}
 
-@app.get("/baixar")
-def baixar_audio(url: str):
+@app.get("/analyze", response_model=VideoAnalysis)
+def analyze_video(url: str, server_url: str = Query(..., description="A URL base da sua API (ex: https://api.com)")):
+    """
+    Passo 1: Analisa o vídeo e retorna o plano de corte (Quantas partes baixar).
+    """
     try:
-        # 1. Limpeza: Remove arquivos de downloads anteriores para não encher o disco
-        files = glob.glob("downloaded_audio*")
-        for f in files:
-            try:
-                os.remove(f)
-            except:
-                pass
-
-        # 2. Configuração Blindada
         ydl_opts = {
-            # O SEGREDO: 'bestaudio/best' 
-            # Diz para o script: "Baixe qualquer áudio que tiver. Se não tiver áudio separado, baixe o vídeo."
-            # Isso elimina o erro "Requested format is not available".
-            'format': 'bestaudio/best',
+            'cookiefile': 'cookies.txt',
+            'user_agent': 'Mozilla/5.0',
+            'noplaylist': True,
+        }
 
-            # Otimizações de Rede (Para vídeos longos não caírem)
-            'socket_timeout': 30,
-            'retries': 10,
-            'fragment_retries': 10,
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # extract_info com download=False é super rápido, só pega metadados
+            info = ydl.extract_info(url, download=False)
+            duration = info.get('duration', 0)
+            title = info.get('title', 'video_desconhecido')
+
+        if not duration:
+            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração do vídeo.")
+
+        # Lógica de Divisão
+        parts = []
+        num_parts = math.ceil(duration / CHUNK_SIZE_SECONDS)
+        
+        for i in range(num_parts):
+            start = i * CHUNK_SIZE_SECONDS
+            end = min((i + 1) * CHUNK_SIZE_SECONDS, duration)
             
-            # Post-Processamento: Converte QUALQUER coisa que baixou para MP3 leve
+            # Monta a URL que o usuário deve chamar para baixar esse pedaço
+            dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start={start}&end={end}&part={i+1}"
+            
+            parts.append({
+                "part_number": i + 1,
+                "start_time": start,
+                "end_time": end,
+                "download_url": dl_link
+            })
+
+        return {
+            "title": title,
+            "duration_total": duration,
+            "total_parts": num_parts,
+            "parts": parts
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/download-part")
+def download_part(
+    url: str, 
+    start: int, 
+    end: int, 
+    part: int = 1
+):
+    """
+    Passo 2: Baixa e converte apenas o intervalo de tempo solicitado.
+    """
+    cleanup_old_files() # Limpeza preventiva
+    
+    filename_base = f"part_{part}_{int(time.time())}"
+    
+    # Função auxiliar para filtrar o intervalo
+    def download_range_func(info, ydl):
+        return [{
+            'start_time': start,
+            'end_time': end
+        }]
+
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            
+            # --- O PULO DO GATO: DOWNLOAD POR INTERVALO ---
+            'download_ranges': download_range_func,
+            'force_keyframes_at_cuts': False, # False é mais rápido, True é mais preciso no corte
+            
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '128', # 128kbps é qualidade padrão do YouTube (ótimo tamanho/qualidade)
+                'preferredquality': '128',
             }],
-
-            # Caminhos e Arquivos
-            'outtmpl': 'downloaded_audio', # O script vai adicionar .mp3 automaticamente depois
-            'noplaylist': True,
-            
-            # Autenticação (Necessária para servidores)
+            'outtmpl': filename_base,
             'cookiefile': 'cookies.txt',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            
-            # Evita travar em metadados obscuros
-            'ignoreerrors': True,
-            'no_warnings': True,
+            # Timeouts e Retries para garantir estabilidade
+            'socket_timeout': 30,
+            'retries': 10,
         }
 
-        print(f"Iniciando download de: {url}")
-
-        # 3. Execução do Download
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            # Tenta pegar o título, se falhar usa um genérico
-            titulo_original = info.get('title', 'audio_youtube')
-            
-            # Remove caracteres inválidos do título para evitar erro no navegador
-            titulo_safe = "".join([c for c in titulo_original if c.isalnum() or c in (' ', '-', '_')]).strip() + ".mp3"
+            real_title = info.get('title', 'audio_part')
 
-        # O arquivo final gerado pelo FFmpeg será sempre .mp3
-        filename = "downloaded_audio.mp3"
+        final_filename = f"{filename_base}.mp3"
+        
+        if not os.path.exists(final_filename):
+            raise HTTPException(status_code=500, detail="Erro na conversão do arquivo.")
 
-        if not os.path.exists(filename):
-            raise HTTPException(status_code=500, detail="Erro: O arquivo de áudio não foi gerado pelo FFmpeg.")
+        # Nome bonito para o download do usuário
+        user_filename = f"{clean_filename(real_title)}_Parte{part}.mp3"
 
-        # 4. Retorno do Arquivo
         return FileResponse(
-            path=filename, 
-            filename=titulo_safe, 
+            path=final_filename, 
+            filename=user_filename, 
             media_type='audio/mpeg'
         )
 
     except Exception as e:
-        # Loga o erro no console do Docker e retorna para o usuário
-        print(f"ERRO CRÍTICO: {str(e)}")
-        return HTTPException(status_code=500, detail=f"ERROR: {str(e)}")
+        print(f"Erro: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
