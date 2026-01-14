@@ -6,12 +6,13 @@ import os
 import glob
 import math
 import time
+import gc # Garbage Collector para limpar RAM
 
-app = FastAPI(title="API YouTube Audio Splitter (Smart Logic)")
+app = FastAPI(title="API YouTube Audio Splitter (Optimized)")
 
-# Constantes de Tempo
-LIMIT_SINGLE_PART = 3599  # 59 minutos e 59 segundos
-CHUNK_SIZE_LONG = 1800    # 30 minutos (para vídeos longos)
+# Constantes
+LIMIT_SINGLE_PART = 3599  # Até 59:59 em 1 link
+CHUNK_SIZE_LONG = 1800    # 30 minutos por parte
 
 class PartInfo(BaseModel):
     part_number: int
@@ -28,16 +29,16 @@ class VideoAnalysis(BaseModel):
 # --- Funções Auxiliares ---
 
 def clean_filename(title: str) -> str:
-    # Remove caracteres perigosos do nome do arquivo
     return "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip()
 
 def cleanup_old_files():
-    """Remove arquivos antigos (mais de 20min) para liberar espaço"""
+    """Remove arquivos antigos e força limpeza de RAM"""
     try:
         files = glob.glob("part_*.mp3")
         for f in files:
             if os.path.getmtime(f) < time.time() - 1200: 
                 os.remove(f)
+        gc.collect() # Força limpeza de memória RAM
     except:
         pass
 
@@ -45,13 +46,12 @@ def cleanup_old_files():
 
 @app.get("/")
 def home():
-    return {"message": "API Smart Splitter Online. Use /analyze"}
+    return {"message": "API Smart Splitter Optimized. Use /analyze"}
 
 @app.get("/analyze", response_model=VideoAnalysis)
 def analyze_video(url: str, server_url: str = Query(..., description="URL base da sua API")):
     """
-    Passo 1: Analisa e decide se divide ou não.
-    Regra: <= 59:59 vai inteiro. > 59:59 divide em blocos de 30min.
+    Passo 1: Analisa levemente (sem baixar nada pesado).
     """
     try:
         ydl_opts = {
@@ -67,40 +67,23 @@ def analyze_video(url: str, server_url: str = Query(..., description="URL base d
             title = info.get('title', 'video_desconhecido')
 
         if not duration:
-            raise HTTPException(status_code=400, detail="Não foi possível determinar a duração.")
+            raise HTTPException(status_code=400, detail="Não foi possível pegar a duração.")
 
         parts = []
 
-        # --- LÓGICA DE DECISÃO ---
+        # Lógica de decisão (Inteiro vs Fatiado)
         if duration <= LIMIT_SINGLE_PART:
-            # CASO 1: Vídeo Curto (Até 59:59) -> 1 Parte Única
             num_parts = 1
             dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start=0&end={duration}&part=1"
-            
-            parts.append({
-                "part_number": 1,
-                "start_time": 0,
-                "end_time": duration,
-                "download_url": dl_link
-            })
-            
+            parts.append({"part_number": 1, "start_time": 0, "end_time": duration, "download_url": dl_link})
         else:
-            # CASO 2: Vídeo Longo (> 59:59) -> Fatiar em 30 min
             chunk_size = CHUNK_SIZE_LONG
             num_parts = math.ceil(duration / chunk_size)
-            
             for i in range(num_parts):
                 start = i * chunk_size
                 end = min((i + 1) * chunk_size, duration)
-                
                 dl_link = f"{server_url.rstrip('/')}/download-part?url={url}&start={start}&end={end}&part={i+1}"
-                
-                parts.append({
-                    "part_number": i + 1,
-                    "start_time": start,
-                    "end_time": end,
-                    "download_url": dl_link
-                })
+                parts.append({"part_number": i+1, "start_time": start, "end_time": end, "download_url": dl_link})
 
         return {
             "title": title,
@@ -121,10 +104,9 @@ def download_part(
     part: int = 1
 ):
     """
-    Passo 2: Baixa o trecho solicitado com precisão máxima.
+    Passo 2: Baixa OTIMIZADO (Menos CPU/RAM).
     """
     cleanup_old_files()
-    
     filename_base = f"part_{part}_{int(time.time())}"
     
     def download_range_func(info, ydl):
@@ -132,28 +114,33 @@ def download_part(
 
     try:
         ydl_opts = {
+            # OTIMIZAÇÃO 1: Baixa o melhor áudio disponível (geralmente m4a/opus)
+            # Evita baixar vídeo para extrair áudio.
             'format': 'bestaudio/best',
+            
+            # Recorte preciso
             'download_ranges': download_range_func,
+            'force_keyframes_at_cuts': True, # Mantém a precisão, mas deixa o yt-dlp gerenciar
             
-            # Precisão de Áudio (Evita silêncio no início)
-            'force_keyframes_at_cuts': True,
+            # OTIMIZAÇÃO 2: Configurações de Rede e Buffer (Economia de RAM)
+            'concurrent_fragment_downloads': 1, # Não baixar múltiplos pedaços ao mesmo tempo
+            'buffersize': 1024, # Buffer pequeno
+            'http_chunk_size': 1048576, # Baixa em blocos de 1MB (suave para a rede)
             
-            # Engine de Download (FFmpeg é melhor para cortes)
-            'external_downloader': 'ffmpeg',
-            'external_downloader_args': {
-                'ffmpeg_i': ['-ss', str(start), '-to', str(end)]
-            },
-            
-            # Segurança SSL
-            'nocheckcertificate': True,
-            
-            # Conversão para MP3 leve
+            # OTIMIZAÇÃO 3: Post-Processamento Leve
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '128',
+                'preferredquality': '128', # 128k é o equilíbrio perfeito. Acima disso gasta CPU à toa.
             }],
             
+            # Flags para o FFmpeg (Prioriza velocidade na conversão)
+            'postprocessor_args': [
+                '-threads', '1',  # Usa apenas 1 núcleo do processador por conversão (não trava o servidor)
+                '-preset', 'ultrafast' # Tenta codificar o mais rápido possível
+            ],
+            
+            'nocheckcertificate': True,
             'outtmpl': filename_base,
             'cookiefile': 'cookies.txt',
             'socket_timeout': 30,
@@ -167,13 +154,12 @@ def download_part(
 
         final_filename = f"{filename_base}.mp3"
         
-        # Fallback para caso a extensão mude
         if not os.path.exists(final_filename):
             possiveis = glob.glob(f"{filename_base}.*")
-            if possiveis:
-                final_filename = possiveis[0]
-            else:
-                raise HTTPException(status_code=500, detail="Erro: Arquivo não gerado.")
+            final_filename = possiveis[0] if possiveis else None
+            
+        if not final_filename:
+             raise HTTPException(status_code=500, detail="Erro: Arquivo não gerado.")
 
         user_filename = f"{clean_filename(real_title)}_Parte{part}.mp3"
 
@@ -184,7 +170,6 @@ def download_part(
         )
 
     except Exception as e:
-        # Limpeza de erro
         if os.path.exists(f"{filename_base}.mp3"):
             os.remove(f"{filename_base}.mp3")
         raise HTTPException(status_code=500, detail=f"Erro no download: {str(e)}")
